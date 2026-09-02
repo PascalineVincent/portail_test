@@ -1541,7 +1541,1249 @@ var HDR_MAP={
   "horodateur":"horodatage_soumission","horodatage":"horodatage_soumission","timestamp":"horodatage_soumission",
   "adresse_e-mail":"email_google","adresse_email":"email_google","email":"email_google",
   "votre_numero_etudiant":"num_etudiant","numero_etudiant":"num_etudiant","n_etudiant":"num_etudiant","matricule":"num_etudiant",
-  "question_2_nom":"nom","nom_de_famille":"nom","nom":"nom",
+  "question_2_nom":"nom","nom_de_famille":"nom","nom":"nom","nom_prenom":"nom_prenom","nom_et_prenom":"nom_prenom",
+  "question_3_prenom":"prenom","prenom":"prenom",
+  "voeu_n1_option_prioritaire":"voeu1","voeu_n_1_option_prioritaire":"voeu1","voeu_1":"voeu1","voeu1":"voeu1","premier_voeu":"voeu1",
+  "voeu_n_2":"voeu2","voeu_2":"voeu2","voeu2":"voeu2","deuxieme_voeu":"voeu2",
+  "voeu_n_3":"voeu3","voeu_3":"voeu3","voeu3":"voeu3","troisieme_voeu":"voeu3",
+  // Colonnes ajoutées par l'enseignant (xlsx retourné)
+  "validation_maths":"validation_maths","validation_mathematiques":"validation_maths",
+  "validation_spanish":"validation_spanish","validation_espagnol":"validation_spanish",
+  "niveau_lv2":"niveau_lv2_ens","niveau_definitif":"niveau_lv2_ens","niveau_lv2_ens":"niveau_lv2_ens",
+  // scores non transmis à l'admin (test papier remis à l'enseignant)
+  // niveaux declares : connus uniquement de l'etudiant et de l'enseignant
+};
+function normalizeHdr(h){
+  var clean=h.trim().toLowerCase()
+    .replace(/œ/g,"oe").replace(/æ/g,"ae")
+    .replace(/[àâä]/g,"a").replace(/[éèêë]/g,"e").replace(/[îï]/g,"i")
+    .replace(/[ôö]/g,"o").replace(/[ûüù]/g,"u").replace(/ç/g,"c")
+    .replace(/[^a-z0-9]/g,"_").replace(/_+/g,"_").replace(/^_|_$/g,"");
+  return HDR_MAP[clean]||clean;
+}
+function parseTxt(txt){
+  var raw=txt.trim();var sep=raw.indexOf(";")>=0?";":raw.indexOf("\t")>=0?"\t":",";
+  var lines=raw.split(/\r?\n/);
+  var rawHdrs=lines[0].split(sep).map(function(h){return h.trim().replace(/^"|"$/g,"");});
+  var hdrs=rawHdrs.map(normalizeHdr);
+  var data=lines.slice(1).filter(function(l){return l.trim();}).map(function(l){
+    var vals=l.split(sep).map(function(v){return v.trim().replace(/^"|"$/g,"");});
+    var o={};hdrs.forEach(function(h,i){o[h]=vals[i]||"";});
+    // Normaliser les libellés des vœux (options complètes du form → codes)
+    ["voeu1","voeu2","voeu3"].forEach(function(k){if(o[k])o[k]=normalizeOpt(o[k]);});
+    if(!o.horodatage_soumission){
+      var b=new Date("2026-09-09T08:00:00");
+      b.setSeconds(b.getSeconds()+Math.random()*172800);
+      o.horodatage_soumission=b.toISOString().replace("T"," ").slice(0,19);
+    }
+    return o;
+  }).filter(function(r){return r.num_etudiant||r.nom;});
+  if(!data.length){alert("Aucune donnee valide. Verifiez que le fichier est bien un export Excel Google Sheets (.xlsx).");return;}
+  ST.rawData=data;showPreview(data,hdrs);refreshAffectTab();
+}
+// Import XLSX enseignant (fusion avec rawData existant)
+function loadEnseignantXlsx(file){
+  if(typeof XLSX==="undefined"){alert("SheetJS non charge.");return;}
+  if(!ST.rawData||!ST.rawData.length){alert("Importez d'abord le fichier Google Form.");return;}
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(e.target.result,{type:"array",raw:false,defval:""});
+      var merged=0;
+      wb.SheetNames.forEach(function(sheetName){
+        var ws=wb.Sheets[sheetName];
+        // Lire en aoa pour trouver la vraie ligne d'en-tête
+        // (le fichier a des lignes d'instructions avant les en-têtes)
+        var aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:""});
+        if(!aoa.length)return;
+        // Trouver la ligne contenant "N° Etudiant" ou "num_etudiant"
+        var hdrRowIdx=-1;
+        for(var ri=0;ri<Math.min(aoa.length,8);ri++){
+          var row=aoa[ri];
+          var hasNum=row.some(function(c){
+            return c&&normalizeHdr(String(c))==="num_etudiant";
+          });
+          if(hasNum){hdrRowIdx=ri;break;}
+        }
+        if(hdrRowIdx<0)return; // Pas d'en-tête reconnu dans cet onglet
+        var hdrs=aoa[hdrRowIdx].map(function(c){return c?normalizeHdr(String(c)):"";});
+        // Construire les objets depuis les lignes de données
+        for(var di=hdrRowIdx+1;di<aoa.length;di++){
+          var dataRow=aoa[di];
+          if(!dataRow.some(function(c){return c&&String(c).trim();}))continue;
+          var row={};
+          hdrs.forEach(function(h,ci){row[h]=dataRow[ci]?String(dataRow[ci]).trim():"";});
+          var num=(row["num_etudiant"]||"").trim();
+          if(!num)continue;
+          var etu=ST.rawData.find(function(r){return(r.num_etudiant||"").trim()===num;});
+          if(!etu)continue;
+          ["validation_maths","validation_spanish","niveau_lv2_ens"].forEach(function(col){
+            if(row[col]){etu[col]=row[col].trim().toLowerCase();merged++;}
+          });
+        }
+      });
+      var okEl=document.getElementById("ens-import-ok");
+      if(merged>0){
+        if(okEl){
+          okEl.querySelector("span").textContent="Fichier fusionné ("+merged+" valeur(s) intégrée(s)). Données prêtes pour l'affectation.";
+          okEl.style.display="flex";
+          setTimeout(function(){okEl.style.display="none";},6000);
+        }
+      } else {
+        alert("Aucune valeur intégrée. Vérifiez :\n- La colonne N° Etudiant est présente\n- Les N° correspondent au fichier Google Form importé\n- Les colonnes VALIDATION_MATHS, VALIDATION_SPANISH ou NIVEAU_LV2 sont remplies");
+      }
+    }catch(err){alert("Erreur lecture : "+err.message);}
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+
+function showPreview(data,hdrs){
+  // S'assurer qu'on est sur l'onglet Import
+  adminTab("import");
+  var cols=hdrs.slice(0,7);
+  var okEl=document.getElementById("import-ok");
+  if(okEl)okEl.textContent=data.length+" etudiants charges ("+hdrs.length+" colonnes).";
+  var t=document.getElementById("preview-tbl");
+  if(t){
+    var thead=t.querySelector("thead tr");
+    var tbody=t.querySelector("tbody");
+    if(thead)thead.innerHTML=cols.map(function(h){return "<th>"+h+"</th>";}).join("");
+    if(tbody)tbody.innerHTML=data.slice(0,8).map(function(r){
+      return "<tr>"+cols.map(function(c){return "<td>"+(r[c]||"")+"</td>";}).join("")+"</tr>";
+    }).join("");
+  }
+  var prev=document.getElementById("import-preview");
+  if(prev)prev.style.display="block";
+}
+function loadDemo(){
+  var nms=["Martin","Bernard","Thomas","Petit","Richard","Durand","Dubois","Moreau","Laurent","Simon","Blanc","Leroy"];
+  var pns=["Emma","Lucas","Lea","Hugo","Chloe","Tom","Ines","Louis","Jade","Nathan","Alice","Paul"];
+  var opts=["voltaire","eco","maths","sport1","sport2","sport3","business_spanish","lv2_allemand","lv2_espagnol","lv2_chinois"];
+  var probs=[0.08,0.18,0.08,0.06,0.05,0.04,0.12,0.13,0.13,0.13];
+  var data=[];
+  for(var i=0;i<180;i++){
+    var rnd=Math.random(),cum=0,v1=opts[0];
+    for(var k=0;k<opts.length;k++){cum+=probs[k];if(rnd<cum){v1=opts[k];break;}}
+    var v2=Math.random()>0.35?opts[Math.floor(Math.random()*opts.length)]:"";
+    var v3=Math.random()>0.55?opts[Math.floor(Math.random()*opts.length)]:"";
+    var b=new Date("2026-09-09T08:00:00");b.setSeconds(b.getSeconds()+Math.floor(Math.random()*172800)+i*10);
+    // Déduire la langue depuis le code Form LV2
+    var lv2FormCodes={lv2_allemand:["lv2_de_debut","lv2_de_debut2","lv2_de_inter"],
+      lv2_chinois:["lv2_chinois"],lv2_espagnol:["lv2_es_debut","lv2_es_inter","lv2_es_avance"]};
+    var lv2Key=[v1,v2].find(function(v){return lv2FormCodes[v];});
+    var niv_lv2=lv2Key?(lv2FormCodes[lv2Key][i%lv2FormCodes[lv2Key].length]):"";
+    var isDM=(v1==="maths"&&i%5===0);var isDS=(v1==="business_spanish"&&i%4===0);
+    data.push({
+      num_etudiant:"ETU"+String(i+1).padStart(4,"0"),nom:nms[i%nms.length],prenom:pns[i%pns.length],
+      email:"etudiant"+(i+1)+"@univ.fr",
+      horodatage_soumission:b.toISOString().replace("T"," ").slice(0,19),
+      voeu1:v1,voeu2:v2,voeu3:v3,
+      validation_maths:v1==="maths"&&!isDM?(Math.random()>0.1?"oui":"non"):"",
+      validation_spanish:v1==="business_spanish"&&!isDS?(Math.random()>0.15?"oui":"non"):"",
+      niveau_lv2_ens:niv_lv2
+    });
+  }
+  data.sort(function(a,b){return a.horodatage_soumission.localeCompare(b.horodatage_soumission);});
+  ST.rawData=data;
+  showPreview(data,["num_etudiant","nom","prenom","email","horodatage_soumission","voeu1","voeu2"]);
+  refreshAffectTab();
+}
+// ── ALGO ──────────────────────────────────────────────────────────
+// ─── Normalisation Google Form → codes internes ────────────────────
+var NORM_MAP={
+  "certification voltaire":"voltaire","projet voltaire":"voltaire","voltaire":"voltaire",
+  "economie contemporaine":"eco","eco":"eco",
+  "remise a niveau mathematiques":"maths","remise a niveau maths":"maths","mathematiques":"maths","maths":"maths",
+  "sport 1":"sport1","sport1":"sport1","sport 2":"sport2","sport2":"sport2",
+  "sport 3":"sport3","sport3":"sport3","sport 4":"sport4","sport4":"sport4",
+  "sport 5":"sport5","sport5":"sport5",
+  "business spanish":"business_spanish","business_spanish":"business_spanish",
+  // LV2 : codes Form (langue uniquement, pas le niveau)
+  "lv2 allemand":"lv2_allemand","lv2_allemand":"lv2_allemand","allemand":"lv2_allemand",
+  "lv2 espagnol":"lv2_espagnol","lv2_espagnol":"lv2_espagnol","espagnol":"lv2_espagnol",
+  "lv2 chinois":"lv2_chinois","lv2_chinois":"lv2_chinois","chinois":"lv2_chinois",
+  // Codes niveau LV2 (retour enseignant) — aussi acceptés directement si présents
+  "lv2 de debut":"lv2_de_debut","lv2_de_debut":"lv2_de_debut",
+  "lv2 de debut2":"lv2_de_debut2","lv2_de_debut2":"lv2_de_debut2",
+  "lv2 de inter":"lv2_de_inter","lv2_de_inter":"lv2_de_inter",
+  "lv2 es debut":"lv2_es_debut","lv2_es_debut":"lv2_es_debut",
+  "lv2 es inter":"lv2_es_inter","lv2_es_inter":"lv2_es_inter",
+  "lv2 es avance":"lv2_es_avance","lv2_es_avance":"lv2_es_avance"
+};
+function normalizeOpt(raw){
+  if(!raw)return"";
+  var r=raw.trim().toLowerCase()
+    .replace(/œ/g,"oe").replace(/æ/g,"ae")
+    .replace(/[àâä]/g,"a").replace(/[éèêë]/g,"e").replace(/[îï]/g,"i")
+    .replace(/[ôö]/g,"o").replace(/[ûüù]/g,"u").replace(/ç/g,"c")
+    .replace(/\s*\(.*?\)/g,"").replace(/[^a-z0-9\s_-]/g,"").replace(/\s+/g," ").trim();
+  var best="",bestLen=0;
+  Object.keys(NORM_MAP).forEach(function(k){
+    if(r.indexOf(k)>=0&&k.length>bestLen){best=NORM_MAP[k];bestLen=k.length;}
+  });
+  return best||r;
+}
+function resolveOpt(raw,niv_ens){
+  var opt=normalizeOpt(raw);
+  // Si code Form LV2 (langue) → niveau enseignant obligatoire pour l'affectation finale
+  if(LV2_FORM.indexOf(opt)>=0){
+    if(niv_ens&&LV2_NIVEAUX.indexOf(niv_ens)>=0)return niv_ens;
+    return opt; // retourne le code Form si pas encore de niveau
+  }
+  // Si déjà un code niveau LV2 (rétrocompatibilité)
+  if(LV2_NIVEAUX.indexOf(opt)>=0&&niv_ens&&LV2_NIVEAUX.indexOf(niv_ens)>=0)return niv_ens;
+  return opt;
+}
+function canJoinGroup(optAff,combi){return[combi.opt1,combi.opt2,combi.opt3,combi.opt4,combi.opt5].filter(Boolean).indexOf(optAff)>=0;}
+// ── LIBELLÉS DES MOTIFS DE NON-AFFECTATION ─────────────────────────
+var MOTIF_LABELS={
+  "niveau_lv2_non_affecte_par_enseignant": "Niveau LV2 non encore affecté par l\'enseignant",
+  "maths_refuse_par_enseignant":           "Refusé par l\'enseignant (niveau Maths insuffisant)",
+  "validation_maths_manquante":            "Validation enseignant manquante (Maths)",
+  "spanish_refuse_par_enseignant":         "Refusé par l\'enseignant (niveau Business Spanish insuffisant)",
+  "validation_spanish_manquante":          "Validation enseignant manquante (Business Spanish)",
+  "aucun_voeu_valide":                     "Aucun voeu valide ou compatible",
+  "affectation_par_defaut_eco":             "⚠ Affecté par défaut en Économie contemporaine (aucun voeu satisfaisable)",
+};
+function motifLabel(code){
+  if(!code)return"";
+  if(MOTIF_LABELS[code])return MOTIF_LABELS[code];
+  if(code.indexOf("aucun_groupe_dispo_")===0){
+    var opt=code.replace("aucun_groupe_dispo_","");
+    return"Aucun groupe disponible pour l\'option : "+(OPT_FULL[opt]||opt);
+  }
+  return code;
+}
+
+function runAffectation(){
+  if(!ST.rawData){alert("Importez d abord le Google Sheets.");return;}
+  if(!ST.combis.length){alert("Configurez les groupes.");return;}
+  document.getElementById("affect-prog").style.display="block";
+  document.getElementById("prog-bar").style.width="0%";
+  setTimeout(function(){
+
+    var cpt={};
+    ST.combis.forEach(function(c){cpt[c.nom]=0;});
+    var data=ST.rawData.slice().sort(function(a,b){
+      return(a.horodatage_soumission||"").localeCompare(b.horodatage_soumission||"");
+    });
+    var redoublants=ST.redoublants||[];
+    var out=[];
+    var dejaPris={};
+
+    function capaciteOpt(opt){
+      return ST.combis.filter(function(c){return canJoinGroup(opt,c);})
+        .reduce(function(s,c){return s+c.places;},0);
+    }
+    function groupesDispo(opt){
+      return ST.combis.filter(function(c){
+        return canJoinGroup(opt,c)&&cpt[c.nom]<c.places;
+      }).sort(function(a,b){return(cpt[a.nom]/a.places)-(cpt[b.nom]/b.places);});
+    }
+    function affecter(etu,opt,rang,estR,force){
+      var compat=groupesDispo(opt);
+      if(!compat.length)return false;
+      cpt[compat[0].nom]++;
+      var rec={};Object.keys(etu).forEach(function(k){rec[k]=etu[k];});
+      rec.option_affectee=opt;rec.groupe=compat[0].nom;
+      rec.voeu_realise=rang||null;rec.motif_refus=null;
+      rec.affectation_forcee=force||false;rec.est_redoublant=estR||false;
+      out.push(rec);dejaPris[etu.num_etudiant]=true;return true;
+    }
+    function getNiv(etu){return(etu.niveau_lv2_ens||"").trim();}
+    function getVoeux(etu){
+      return[etu.voeu1,etu.voeu2,etu.voeu3].filter(function(v){return v&&v.trim();});
+    }
+    function rv(etu,raw){return raw?resolveOpt(raw,getNiv(etu)):"";}
+    function optAutorisee(etu,opt){
+      if(LV2_FORM.indexOf(opt)>=0&&!getNiv(etu))return false;
+      if(opt==="maths"){var vm=(etu.validation_maths||"").toLowerCase().trim();if(vm==="non"||vm==="refuse"||vm==="no")return false;}
+      if(opt==="business_spanish"){var vs=(etu.validation_spanish||"").toLowerCase().trim();if(vs==="non"||vs==="refuse")return false;}
+      return true;
+    }
+    function isSport(opt){return /^sport\d+$/.test(opt||"");}
+
+    // ── Passe 0 : Redoublants ─────────────────────────────────────────────
+    redoublants.forEach(function(r){
+      var opt=normalizeOpt(r.option_validee||"");
+      if(!opt||opt==="oui"||opt==="non")return;
+      var compat=ST.combis.filter(function(c){return cpt[c.nom]<c.places;})
+        .sort(function(a,b){return(cpt[a.nom]/a.places)-(cpt[b.nom]/b.places);});
+      if(!compat.length)return;
+      var g=compat[0];cpt[g.nom]++;
+      out.push({num_etudiant:r.num_etudiant,nom:r.nom,prenom:r.prenom,
+        email:r.email||"",horodatage_soumission:"(redoublant)",
+        voeu1:opt,voeu2:"",voeu3:"",option_affectee:g.opt1||opt,groupe:g.nom,
+        voeu_realise:0,motif_refus:null,affectation_forcee:false,est_redoublant:true});
+      dejaPris[r.num_etudiant]=true;
+    });
+
+    document.getElementById("prog-bar").style.width="10%";
+
+    // ── Calcul tension (sur voeux 1 uniquement) ───────────────────────────
+    var demandeV1={};
+    var LV2_PRIO=["lv2_allemand","lv2_chinois"];
+    data.forEach(function(etu){
+      if(dejaPris[etu.num_etudiant])return;
+      var v1=rv(etu,etu.voeu1);
+      if(v1&&optAutorisee(etu,v1))demandeV1[v1]=(demandeV1[v1]||0)+1;
+    });
+
+    // Toutes les options demandées (hors éco, traitée séparément)
+    var demandeTotal={};
+    data.forEach(function(etu){
+      if(dejaPris[etu.num_etudiant])return;
+      getVoeux(etu).forEach(function(v){
+        var o=rv(etu,v);
+        if(o&&o!=="eco"&&optAutorisee(etu,o))demandeTotal[o]=(demandeTotal[o]||0)+1;
+      });
+    });
+    var allOpts=Object.keys(demandeTotal);
+    allOpts.sort(function(a,b){
+      var aP=LV2_PRIO.indexOf(a)>=0,bP=LV2_PRIO.indexOf(b)>=0;
+      if(aP&&!bP)return -1;if(!aP&&bP)return 1;
+      var capA=capaciteOpt(a)||9999,capB=capaciteOpt(b)||9999;
+      var tA=(demandeV1[a]||0)/capA,tB=(demandeV1[b]||0)/capB;
+      return tA-tB;
+    });
+
+    // ── Passe A : Voeux 1 stricts (toutes options sauf éco) ──────────────
+    allOpts.forEach(function(opt){
+      data.forEach(function(etu){
+        if(dejaPris[etu.num_etudiant])return;
+        if(rv(etu,etu.voeu1)!==opt)return;
+        if(!optAutorisee(etu,opt))return;
+        affecter(etu,opt,1,false,false);
+      });
+    });
+    // Voeux 1 éco
+    data.forEach(function(etu){
+      if(dejaPris[etu.num_etudiant])return;
+      if(rv(etu,etu.voeu1)==="eco")affecter(etu,"eco",1,false,false);
+    });
+
+    document.getElementById("prog-bar").style.width="50%";
+
+    // ── Passe B : Compléter avec voeux 2 et 3 ────────────────────────────
+    allOpts.forEach(function(opt){
+      if(!groupesDispo(opt).length)return;
+      data.forEach(function(etu){
+        if(dejaPris[etu.num_etudiant])return;
+        var rang=0;
+        if(rv(etu,etu.voeu2||"")===opt)rang=2;
+        else if(rv(etu,etu.voeu3||"")===opt)rang=3;
+        if(!rang||!optAutorisee(etu,opt))return;
+        if(!groupesDispo(opt).length)return;
+        affecter(etu,opt,rang,false,false);
+      });
+    });
+    // Voeux 2/3 éco
+    data.forEach(function(etu){
+      if(dejaPris[etu.num_etudiant])return;
+      var rang=0;
+      if(rv(etu,etu.voeu2||"")==="eco")rang=2;
+      else if(rv(etu,etu.voeu3||"")==="eco")rang=3;
+      if(rang)affecter(etu,"eco",rang,false,false);
+    });
+
+    document.getElementById("prog-bar").style.width="75%";
+
+    // ── Passe D : Rééquilibrage — options < 80% de capacité ──────────────
+    // Pour les options peu remplies (LV2 et faible tension V1 en priorité),
+    // déplacer des étudiants affectés en éco qui ont l'option en voeu2/3
+    var SEUIL_REMPLISSAGE = 0.80;
+    var LV2_PRIO_D = ["lv2_allemand","lv2_chinois","lv2_espagnol"];
+
+    // Calcul du remplissage actuel par option
+    function remplissageOpt(opt){
+      var cap=capaciteOpt(opt); if(!cap)return 1;
+      var pris=out.filter(function(r){return r.option_affectee===opt&&!r.est_redoublant;}).length;
+      return pris/cap;
+    }
+
+    // Options à rééquilibrer : celles < 80% de capacité, hors éco
+    // Triées : LV2 d'abord, puis par remplissage croissant
+    var optsDesequil=allOpts.filter(function(opt){
+      return capaciteOpt(opt)>0 && remplissageOpt(opt)<SEUIL_REMPLISSAGE;
+    }).sort(function(a,b){
+      var aL=LV2_PRIO_D.indexOf(a)>=0, bL=LV2_PRIO_D.indexOf(b)>=0;
+      if(aL&&!bL)return -1; if(!aL&&bL)return 1;
+      return remplissageOpt(a)-remplissageOpt(b);
+    });
+
+    optsDesequil.forEach(function(opt){
+      // Combien de places manquent pour atteindre 80% ?
+      var cap=capaciteOpt(opt);
+      var cible=Math.ceil(cap*SEUIL_REMPLISSAGE);
+      var actuels=out.filter(function(r){return r.option_affectee===opt&&!r.est_redoublant;}).length;
+      var aRemplir=cible-actuels;
+      if(aRemplir<=0)return;
+
+      // Chercher des étudiants en éco qui ont opt en voeu2 ou voeu3
+      // Triés par horodatage (1er arrivé 1er servi)
+      var candidats=out.filter(function(r){
+        if(r.option_affectee!=="eco")return false;
+        if(r.est_redoublant)return false;
+        if(r.affectation_forcee)return false; // déjà forcé, ne pas redéplacer
+        var rang=0;
+        if(rv(r,"voeu2")===opt)rang=2;
+        else if(rv(r,"voeu3")===opt)rang=3;
+        if(!rang)return false;
+        // Construire un objet etu pour optAutorisee
+        var etu={niveau_lv2_ens:r.niveau_lv2_ens||"",
+                 validation_maths:r.validation_maths||"",
+                 validation_spanish:r.validation_spanish||""};
+        return optAutorisee(etu,opt);
+      }).sort(function(a,b){
+        return(a.horodatage_soumission||"").localeCompare(b.horodatage_soumission||"");
+      });
+
+      var deplaces=0;
+      candidats.forEach(function(r){
+        if(deplaces>=aRemplir)return;
+        var compat=groupesDispo(opt);
+        if(!compat.length)return;
+        // Déplacer : libérer la place éco, occuper la place opt
+        // Trouver le groupe éco de cet étudiant et décrémenter
+        var grpEco=ST.combis.find(function(c){return c.nom===r.groupe;});
+        if(grpEco&&cpt[grpEco.nom]>0)cpt[grpEco.nom]--;
+        // Affecter dans le nouveau groupe
+        cpt[compat[0].nom]++;
+        // Calculer le rang du voeu
+        var rang=0;
+        if(rv(r,"voeu2")===opt)rang=2;
+        else if(rv(r,"voeu3")===opt)rang=3;
+        // Modifier l'enregistrement dans out
+        r.option_affectee=opt;
+        r.groupe=compat[0].nom;
+        r.voeu_realise=rang;
+        r.motif_refus=null;
+        r.affectation_forcee=false; // c'est un voeu de l'étudiant
+        deplaces++;
+      });
+    });
+
+    document.getElementById("prog-bar").style.width="85%";
+
+    // ── Passe C : Non affectés → sport dispo ou éco fallback ─────────────
+    data.forEach(function(etu){
+      if(dejaPris[etu.num_etudiant])return;
+      var voeux=getVoeux(etu);
+      var motif="aucun_voeu_valide";
+      var placed=false;
+
+      // Si que des sports dans les voeux → chercher n'importe quel sport dispo
+      if(voeux.length>0&&voeux.every(function(v){return isSport(rv(etu,v));})){
+        var sportsDispo=ST.combis.filter(function(c){
+          return isSport(c.opt1)&&cpt[c.nom]<c.places;
+        }).sort(function(a,b){return(cpt[a.nom]/a.places)-(cpt[b.nom]/b.places);});
+        if(sportsDispo.length){
+          cpt[sportsDispo[0].nom]++;
+          var recS={};Object.keys(etu).forEach(function(k){recS[k]=etu[k];});
+          recS.option_affectee=sportsDispo[0].opt1;recS.groupe=sportsDispo[0].nom;
+          recS.voeu_realise=null;recS.motif_refus="sport_demande_redirige";
+          recS.affectation_forcee=false;recS.est_redoublant=false;
+          out.push(recS);dejaPris[etu.num_etudiant]=true;placed=true;
+        }
+      }
+
+      if(!placed){
+        // Éco par défaut
+        var ecoOk=affecter(etu,"eco",null,false,true);
+        if(ecoOk){
+          // Calculer motif
+          for(var vi=0;vi<voeux.length;vi++){
+            var opt=rv(etu,voeux[vi]);
+            if(opt==="eco"){motif="eco_non_satisfait";break;}
+            if(!optAutorisee(etu,opt)){motif="validation_bloquee";break;}
+            if(!groupesDispo(opt).length){motif="groupes_pleins";break;}
+          }
+          out[out.length-1].motif_refus="affectation_par_defaut_eco__raison__"+motif;
+        } else {
+          // Éco plein → affecter dans n'importe quel groupe disponible
+          var anyGrp=ST.combis.filter(function(c){return cpt[c.nom]<c.places;})
+            .sort(function(a,b){return(cpt[a.nom]/a.places)-(cpt[b.nom]/b.places);});
+          if(anyGrp.length){
+            cpt[anyGrp[0].nom]++;
+            var rec3={};Object.keys(etu).forEach(function(k){rec3[k]=etu[k];});
+            rec3.option_affectee=anyGrp[0].opt1||"eco";rec3.groupe=anyGrp[0].nom;
+            rec3.voeu_realise=null;rec3.affectation_forcee=true;rec3.est_redoublant=false;
+            rec3.motif_refus="affectation_forcee_groupe_dispo__raison__eco_plein";
+            out.push(rec3);dejaPris[etu.num_etudiant]=true;
+          } else {
+            // Vraiment aucun groupe → ne devrait pas arriver si les groupes sont bien configurés
+            var rec4={};Object.keys(etu).forEach(function(k){rec4[k]=etu[k];});
+            rec4.option_affectee=null;rec4.groupe=null;rec4.voeu_realise=null;
+            rec4.motif_refus="aucun_groupe_disponible";rec4.affectation_forcee=false;rec4.est_redoublant=false;
+            out.push(rec4);
+          }
+        }
+      }
+    });
+
+    document.getElementById("prog-bar").style.width="100%";
+    ST.results=out;
+    setTimeout(function(){
+      var prog=document.getElementById("affect-prog");
+      if(prog)prog.style.display="none";
+      renderResults(out);adminTab("resultats");
+    },400);
+  },50);
+}
+function renderResults(data){
+  // Rendre le panneau visible directement
+  var pageAdmin=document.getElementById("page-admin");
+  if(pageAdmin) pageAdmin.style.display="block";
+  var apanel=document.getElementById("apanel-resultats");
+  if(apanel) apanel.style.display="block";
+  var noaff=document.getElementById("res-noaffect");
+  var ok=document.getElementById("res-ok");
+  if(noaff) noaff.style.display="none";
+  if(ok){ ok.classList.remove("res-hidden"); ok.style.display="block"; }
+
+  var aff=data.filter(function(r){return r.option_affectee;});
+  var forces=data.filter(function(r){return r.affectation_forcee;});
+  var etudiants=data.filter(function(r){return !r.est_redoublant;});
+  var nEtu=etudiants.length||1;
+  var nV1=etudiants.filter(function(r){return r.voeu_realise===1;}).length;
+  var nV2=etudiants.filter(function(r){return r.voeu_realise===2;}).length;
+  var nV3=etudiants.filter(function(r){return r.voeu_realise===3;}).length;
+  var nRedoub=data.filter(function(r){return r.est_redoublant;}).length;
+
+  var sc=document.getElementById("stat-cards");
+  if(sc) sc.innerHTML=
+    "<div class='stat-card'><div class='stat-label'>Total affectés</div><div class='stat-value'>"+aff.length+"</div></div>"+
+    "<div class='stat-card'><div class='stat-label'>Voeu 1 satisfait</div><div class='stat-value' style='color:#16a34a'>"+Math.round(100*nV1/nEtu)+"%</div><div class='stat-sub'>"+nV1+" ét.</div></div>"+
+    "<div class='stat-card'><div class='stat-label'>Voeu 2 satisfait</div><div class='stat-value' style='color:#0891b2'>"+Math.round(100*nV2/nEtu)+"%</div><div class='stat-sub'>"+nV2+" ét.</div></div>"+
+    "<div class='stat-card'><div class='stat-label'>Voeu 3 satisfait</div><div class='stat-value' style='color:#7c3aed'>"+Math.round(100*nV3/nEtu)+"%</div><div class='stat-sub'>"+nV3+" ét.</div></div>"+
+    "<div class='stat-card'><div class='stat-label'>Forcés éco</div><div class='stat-value' style='color:#f97316'>"+forces.length+"</div><div class='stat-sub'>"+Math.round(100*forces.length/nEtu)+"%</div></div>"+
+    (nRedoub?"<div class='stat-card'><div class='stat-label'>Redoublants</div><div class='stat-value' style='color:#64748b'>"+nRedoub+"</div></div>":"");
+
+  // Tableau groupes
+  var gcnt={};
+  aff.forEach(function(r){if(r.groupe)gcnt[r.groupe]=(gcnt[r.groupe]||0)+1;});
+  var tg=document.querySelector("#tbl-grps tbody");
+  if(tg) tg.innerHTML=ST.combis.map(function(c){
+    var n=gcnt[c.nom]||0;
+    var pct=c.places>0?Math.round(100*n/c.places):0;
+    var opts=[c.opt1,c.opt2,c.opt3,c.opt4,c.opt5].filter(Boolean).join(", ");
+    return "<tr><td><strong>"+c.nom+"</strong></td><td>"+opts+"</td><td>"+c.places+"</td><td>"+n+"</td><td>"+pct+"%</td></tr>";
+  }).join("");
+
+  // Tableau par option
+  var oc={};
+  aff.forEach(function(r){if(r.option_affectee)oc[r.option_affectee]=(oc[r.option_affectee]||0)+1;});
+  var to=document.querySelector("#tbl-opts tbody");
+  if(to) to.innerHTML=Object.keys(oc).sort(function(a,b){return oc[b]-oc[a];}).map(function(k){
+    return "<tr><td>"+(OPT_FULL[k]||k)+"</td><td>"+oc[k]+"</td></tr>";
+  }).join("");
+
+  // Tableau forcés/non affectés
+  var na=data.filter(function(r){return r.affectation_forcee||!r.option_affectee;});
+  var tn=document.querySelector("#tbl-na tbody");
+  if(tn) tn.innerHTML=!na.length
+    ?"<tr><td colspan='6' style='color:#94a3b8;padding:12px'>Aucun étudiant forcé en Éco.</td></tr>"
+    :na.map(function(r){
+      var raison=(r.motif_refus||"").replace("affectation_par_defaut_eco__raison__","");
+      return "<tr style='background:#fff7ed'><td>"+r.num_etudiant+"</td>"+
+        "<td>"+(r.nom||"")+" "+(r.prenom||"")+"</td>"+
+        "<td>"+(OPT_FULL[r.voeu1]||r.voeu1||"-")+"</td>"+
+        "<td>"+(OPT_FULL[r.voeu2]||r.voeu2||"-")+"</td>"+
+        "<td>"+(OPT_FULL[r.voeu3]||r.voeu3||"-")+"</td>"+
+        "<td style='font-size:12px;color:#c2410c'>"+raison+"</td></tr>";
+    }).join("");
+}
+
+function exportRapportPDF(){
+  if(!ST.results||!ST.results.length){alert("Lancez d abord l affectation.");return;}
+  var jsPDF=window.jspdf?window.jspdf.jsPDF:null;
+  if(!jsPDF){alert("jsPDF non charge.");return;}
+  var doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
+  var BL=[15,41,66], CY=[8,145,178], GR=[100,116,139], OR=[249,115,22], VI=[124,58,237];
+  var W=doc.internal.pageSize.getWidth();
+  var y=20;
+
+  // ── Titre ──────────────────────────────────────────────────────────────
+  doc.setFillColor(15,41,66);doc.rect(0,0,W,28,'F');
+  doc.setTextColor(255,255,255);doc.setFontSize(16);doc.setFont('helvetica','bold');
+  doc.text('Portail Options Pédagogiques 2026-2027',W/2,12,{align:'center'});
+  doc.setFontSize(10);doc.setFont('helvetica','normal');
+  doc.text('Rapport affectation - '+new Date().toLocaleDateString('fr-FR'),W/2,21,{align:'center'});
+  y=36;
+
+  // ── 1. Résultats chiffrés ───────────────────────────────────────────────
+  doc.setTextColor(...BL);doc.setFontSize(13);doc.setFont('helvetica','bold');
+  doc.text('1. Resultats de l affectation',14,y);y+=6;
+  doc.setDrawColor(200,200,200);doc.line(14,y,W-14,y);y+=5;
+
+  var data=ST.results;
+  var aff=data.filter(function(r){return r.option_affectee;});
+  var etu=data.filter(function(r){return !r.est_redoublant;});
+  var nEtu=etu.length||1;
+  var nV1=etu.filter(function(r){return r.voeu_realise===1;}).length;
+  var nV2=etu.filter(function(r){return r.voeu_realise===2;}).length;
+  var nV3=etu.filter(function(r){return r.voeu_realise===3;}).length;
+  var nF=data.filter(function(r){return r.affectation_forcee;}).length;
+  var nR=data.filter(function(r){return r.est_redoublant;}).length;
+
+  // Tableau stats
+  doc.autoTable({
+    startY:y,margin:{left:14,right:14},
+    head:[['Indicateur','Valeur','Détail']],
+    body:[
+      ['Total affectés',aff.length,'étudiants + redoublants'],
+      ['Vœu 1 satisfait',Math.round(100*nV1/nEtu)+'%',nV1+' étudiants'],
+      ['Vœu 2 satisfait',Math.round(100*nV2/nEtu)+'%',nV2+' étudiants'],
+      ['Vœu 3 satisfait',Math.round(100*nV3/nEtu)+'%',nV3+' étudiants'],
+      ['Forcés Éco',Math.round(100*nF/nEtu)+'%',nF+' étudiants'],
+      ['Redoublants',nR,'affectés en priorité'],
+    ],
+    headStyles:{fillColor:BL,textColor:[255,255,255],fontStyle:'bold',fontSize:9},
+    bodyStyles:{fontSize:9},
+    alternateRowStyles:{fillColor:[248,250,252]},
+    columnStyles:{0:{fontStyle:'bold'},1:{halign:'center',fontStyle:'bold'},2:{textColor:GR}},
+    theme:'grid'
+  });
+  y=doc.lastAutoTable.finalY+8;
+
+  // Tableau par option
+  doc.setTextColor(...BL);doc.setFontSize(11);doc.setFont('helvetica','bold');
+  doc.text('Repartition par option',14,y);y+=5;
+  var oc={};
+  aff.forEach(function(r){if(r.option_affectee)oc[r.option_affectee]=(oc[r.option_affectee]||0)+1;});
+  var caps={};
+  ST.combis.forEach(function(c){if(c.opt1)caps[c.opt1]=(caps[c.opt1]||0)+c.places;});
+  var optRows=Object.keys(oc).sort(function(a,b){return oc[b]-oc[a];}).map(function(k){
+    var cap=caps[k]||0;
+    var pct=cap>0?Math.round(100*oc[k]/cap)+'%':'—';
+    return [OPT_FULL[k]||k, oc[k], cap||'—', pct];
+  });
+  doc.autoTable({
+    startY:y,margin:{left:14,right:14},
+    head:[['Option','Affectés','Capacité','Remplissage']],
+    body:optRows,
+    headStyles:{fillColor:BL,textColor:[255,255,255],fontStyle:'bold',fontSize:9},
+    bodyStyles:{fontSize:9},
+    alternateRowStyles:{fillColor:[248,250,252]},
+    columnStyles:{1:{halign:'center'},2:{halign:'center'},3:{halign:'center',fontStyle:'bold'}},
+    theme:'grid'
+  });
+  y=doc.lastAutoTable.finalY+8;
+
+  // Tableau forcés (si présents)
+  var forces=data.filter(function(r){return r.affectation_forcee||!r.option_affectee;});
+  if(forces.length>0){
+    if(y>220){doc.addPage();y=20;}
+    doc.setTextColor(...OR);doc.setFontSize(11);doc.setFont('helvetica','bold');
+    doc.text('Etudiants forces / non affectes ('+forces.length+')',14,y);y+=5;
+    var fRows=forces.slice(0,50).map(function(r){
+      var motif=(r.motif_refus||'').replace('affectation_par_defaut_eco__raison__','').replace(/_/g,' ');
+      return [r.num_etudiant,(r.nom||'')+' '+(r.prenom||''),
+              OPT_FULL[r.voeu1]||r.voeu1||'—',OPT_FULL[r.voeu2]||r.voeu2||'—',
+              r.option_affectee||'—',motif];
+    });
+    doc.autoTable({
+      startY:y,margin:{left:14,right:14},
+      head:[['N° Etu','Nom Prénom','Vœu 1','Vœu 2','Affecté','Motif']],
+      body:fRows,
+      headStyles:{fillColor:[249,115,22],textColor:[255,255,255],fontStyle:'bold',fontSize:8},
+      bodyStyles:{fontSize:7},
+      alternateRowStyles:{fillColor:[255,247,237]},
+      theme:'grid'
+    });
+    y=doc.lastAutoTable.finalY+8;
+  }
+
+  // ── 2. Algorithme (page suivante) ───────────────────────────────────────
+  doc.addPage();y=20;
+  doc.setFillColor(15,41,66);doc.rect(0,0,W,18,'F');
+  doc.setTextColor(255,255,255);doc.setFontSize(14);doc.setFont('helvetica','bold');
+  doc.text('2. Fonctionnement de l algorithme',W/2,12,{align:'center'});
+  y=26;
+
+  var passes=[
+    ["Passe 0 - Redoublants",[231,76,60],"Redoublants avec option validee : affectes en premier dans le groupe le moins rempli, quelle que soit l option du groupe."],
+    ["Passe A - Voeux 1",[15,41,66],"Voeux 1 traites par tension croissante. LV2 Allemand et Chinois en premier (structurellement sous-demandes). 1er arrive 1er servi si tension > 1."],
+    ["Passe B - Voeux 2 et 3",[8,145,178],"Les places restantes sont completees avec les voeux 2 et 3, pour remplir les options a leur capacite maximale."],
+    ["Passe D - Reequilibrage 80%",[124,58,237],"Options < 80% de capacite : des etudiants en Eco par defaut ayant l option en voeu 2 ou 3 sont deplaces vers cette option."],
+    ["Passe finale - Eco par defaut",[249,115,22],"Etudiants sans affectation places en Eco Contemporaine. Si Eco est plein, affectation dans n importe quel groupe disponible."],
+  ];
+  passes.forEach(function(p){
+    var lines=doc.splitTextToSize(p[2],W-50);
+    var h=Math.max(14,(lines.length)*4.5+8);
+    if(y+h>270){doc.addPage();y=20;}
+    doc.setFillColor(...p[1]);doc.rect(14,y,40,h,'F');
+    doc.setTextColor(255,255,255);doc.setFontSize(8);doc.setFont('helvetica','bold');
+    var titleLines=doc.splitTextToSize(p[0],36);
+    titleLines.forEach(function(tl,ti){doc.text(tl,16,y+6+ti*4.5);});
+    doc.setFillColor(248,250,252);doc.rect(54,y,W-68,h,'F');
+    doc.setTextColor(30,41,59);doc.setFontSize(8.5);doc.setFont('helvetica','normal');
+    lines.forEach(function(l,li){doc.text(l,56,y+6+li*4.5);});
+    doc.setDrawColor(226,232,240);doc.rect(14,y,W-28,h,'S');
+    y+=h+3;
+  });
+
+  // Tension
+  if(y>240){doc.addPage();y=20;}
+  y+=4;
+  doc.setTextColor(...BL);doc.setFontSize(11);doc.setFont('helvetica','bold');
+  doc.text('Calcul de la tension',14,y);y+=5;
+  doc.setFontSize(9);doc.setFont('helvetica','normal');doc.setTextColor(50,50,50);
+  var tensionTxt="Tension = nb voeux 1 / capacite groupes. Tension < 1 = option sous-demandee, traitee en priorite. Tension >= 1 = option en tension, 1er arrive 1er servi par horodatage Google Forms.";
+  var tLines=doc.splitTextToSize(tensionTxt,W-28);
+  tLines.forEach(function(l){doc.text(l,14,y);y+=4.5;});
+
+  // Pied de page
+  var pageCount=doc.internal.getNumberOfPages();
+  for(var i=1;i<=pageCount;i++){
+    doc.setPage(i);
+    doc.setFontSize(8);doc.setTextColor(...GR);
+    doc.text("Portail Options Pedagogiques 2026-2027 - Page "+i+"/"+pageCount,W/2,doc.internal.pageSize.getHeight()-8,{align:"center"});
+  }
+
+  doc.save("rapport_affectation_"+new Date().toISOString().slice(0,10)+".pdf");
+}
+
+function escHtml(s){ return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+function showQEditor(disc){
+  renderQEditor(disc, "q-editor-container");
+  document.querySelectorAll("[id^='qedit-tab-']").forEach(function(b){b.classList.remove("btn-primary");b.classList.add("btn-secondary");});
+  var tab=document.getElementById("qedit-tab-"+disc);
+  if(tab){tab.classList.remove("btn-secondary");tab.classList.add("btn-primary");}
+}
+function showQEditorEns(disc){
+  renderQEditor(disc, "q-editor-ens-container");
+  document.querySelectorAll("[id^='qedit-ens-tab-']").forEach(function(b){b.classList.remove("btn-primary");b.classList.add("btn-secondary");});
+  var tab=document.getElementById("qedit-ens-tab-"+disc);
+  if(tab){tab.classList.remove("btn-secondary");tab.classList.add("btn-primary");}
+}
+
+function collectQEditor(disc, containerId){
+  // Lire les valeurs depuis l'éditeur et mettre à jour TEST_CONFIG
+  var qs = TEST_CONFIG[disc] || [];
+  qs.forEach(function(q,i){
+    var qEl = document.getElementById("qe-q-"+i);
+    if(qEl) q.q = qEl.value;
+    q.opts.forEach(function(o){
+      var oEl = document.getElementById("qe-opt-"+i+"-"+o.a);
+      if(oEl) o.l = oEl.value;
+    });
+    var cEl = document.getElementById("qe-correct-"+i);
+    if(cEl) q.correct = cEl.value.trim().toLowerCase();
+  });
+  TEST_CONFIG[disc] = qs;
+  rebuildFromConfig();
+  reloadAllTests();
+}
+
+function saveQEditor(){
+  collectQEditor(CURRENT_QEDIT_DISC, "q-editor-container");
+  var ok=document.getElementById("qedit-ok");
+  if(ok){ok.style.display="flex";setTimeout(function(){ok.style.display="none";},3000);}
+}
+function saveQEditorEns(){
+  collectQEditor(CURRENT_QEDIT_DISC, "q-editor-ens-container");
+  var ok=document.getElementById("qedit-ens-ok");
+  if(ok){ok.style.display="flex";setTimeout(function(){ok.style.display="none";},3000);}
+}
+
+function addQuestion(){
+  var disc=CURRENT_QEDIT_DISC;
+  if(!TEST_CONFIG[disc]) TEST_CONFIG[disc]=[];
+  var i=TEST_CONFIG[disc].length+1;
+  TEST_CONFIG[disc].push({
+    id:disc.replace("lv2_","")+(i),
+    q:"Nouvelle question "+i,
+    opts:[{a:"a",l:"Option A"},{a:"b",l:"Option B"},{a:"c",l:"Option C"}],
+    correct:"a"
+  });
+  showQEditor(disc);
+}
+function addQuestionEns(){
+  var disc=CURRENT_QEDIT_DISC;
+  if(!TEST_CONFIG[disc]) TEST_CONFIG[disc]=[];
+  var i=TEST_CONFIG[disc].length+1;
+  TEST_CONFIG[disc].push({
+    id:disc.replace("lv2_","")+(i),
+    q:"Nouvelle question "+i,
+    opts:[{a:"a",l:"Option A"},{a:"b",l:"Option B"},{a:"c",l:"Option C"}],
+    correct:"a"
+  });
+  showQEditorEns(disc);
+}
+
+// ── EXPORT / IMPORT JSON ──────────────────────────────────────────
+function exportConfigJSON(){
+  var json = JSON.stringify(TEST_CONFIG, null, 2);
+  var blob = new Blob([json], {type:"application/json"});
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "test_config_"+new Date().toISOString().slice(0,10)+".json";
+  a.click();
+}
+function importConfigJSON(inp){
+  if(!inp.files[0]) return;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try{
+      var data = JSON.parse(e.target.result);
+      // Valider la structure minimale
+      var valid = typeof data === "object" && Object.keys(data).length > 0;
+      if(!valid){alert("Fichier JSON invalide."); return;}
+      Object.keys(data).forEach(function(k){ TEST_CONFIG[k] = data[k]; });
+      rebuildFromConfig();
+      reloadAllTests();
+      // Rafraîchir l'éditeur affiché
+      if(document.getElementById("q-editor-container")&&document.getElementById("q-editor-container").innerHTML)
+        showQEditor(CURRENT_QEDIT_DISC);
+      if(document.getElementById("q-editor-ens-container")&&document.getElementById("q-editor-ens-container").innerHTML)
+        showQEditorEns(CURRENT_QEDIT_DISC);
+      alert("Configuration importée. Les tests sont mis à jour.");
+    } catch(err){
+      alert("Erreur de lecture JSON : "+err.message);
+    }
+  };
+  reader.readAsText(inp.files[0]);
+}
+
+// ── IMPORT RETOUR ENSEIGNANT + AFFECTATION (bouton unique) ────────
+function importEnseignantEtAffecter(file){
+  if(!file)return;
+  if(typeof XLSX==="undefined"){alert("SheetJS non charge.");return;}
+  if(!ST.rawData||!ST.rawData.length){alert("Importez d\'abord le fichier Google Form.");return;}
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(e.target.result,{type:"array",raw:false,defval:""});
+      var merged=0;
+      wb.SheetNames.forEach(function(shName){
+        var ws=wb.Sheets[shName];
+        var aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:""});
+        if(!aoa.length)return;
+        // Trouver la ligne d\'en-tête réelle (le fichier a des instructions avant)
+        var hdrIdx=-1;
+        for(var ri=0;ri<Math.min(aoa.length,8);ri++){
+          if(aoa[ri].some(function(c){return c&&normalizeHdr(String(c))==="num_etudiant";})){
+            hdrIdx=ri;break;
+          }
+        }
+        if(hdrIdx<0)return;
+        var hdrs=aoa[hdrIdx].map(function(c){return c?normalizeHdr(String(c)):"";});
+        for(var di=hdrIdx+1;di<aoa.length;di++){
+          var dataRow=aoa[di];
+          if(!dataRow.some(function(c){return c&&String(c).trim();}))continue;
+          var row={};
+          hdrs.forEach(function(h,ci){row[h]=dataRow[ci]?String(dataRow[ci]).trim():"";});
+          var num=(row["num_etudiant"]||"").trim();
+          if(!num)continue;
+          var etu=ST.rawData.find(function(r){return(r.num_etudiant||"").trim()===num;});
+          if(!etu)continue;
+          ["validation_maths","validation_spanish","niveau_lv2_ens"].forEach(function(col){
+            if(row[col]){etu[col]=row[col].toLowerCase();merged++;}
+          });
+        }
+      });
+      if(merged===0){
+        alert("Aucune valeur integree. Verifiez :\n- Colonne N° Etudiant presente\n- N° correspondent au fichier Google Form\n- Colonnes VALIDATION/NIVEAU remplies");
+        return;
+      }
+      var okEl=document.getElementById("ens-import-ok");
+      if(okEl){
+        okEl.querySelector("span").textContent="Fichier fusionné ("+merged+" valeur(s)). Lancement de l\'affectation...";
+        okEl.style.display="flex";
+      }
+      setTimeout(function(){showAffect();setTimeout(function(){runAffectation();},400);},800);
+    }catch(err){alert("Erreur : "+err.message);}
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+
+// ── INIT ──────────────────────────────────────────────────────────
+window.addEventListener("load",function(){
+  goTo("accueil");
+  initJauges();
+  renderSportCatalogue();
+  var saved=localStorage.getItem("gform_url");
+  if(saved)applyGformUrl(saved);
+  else document.getElementById("gform-config-zone").style.display="block";
+});
+
+function renderRedoublants(){
+  var wrap=document.getElementById("redoub-list");
+  if(!wrap)return;
+  if(!ST.redoublants||!ST.redoublants.length){
+    wrap.innerHTML="<div class='banner bw' style='margin-top:8px'>Aucun redoublant importé.</div>";
+    return;
+  }
+  wrap.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:12px">'+
+    '<thead><tr style="background:#f1f5f9">'+
+      '<th style="padding:6px 10px;text-align:left;color:#475569">N° Étudiant</th>'+
+      '<th style="padding:6px 10px;text-align:left;color:#475569">Nom</th>'+
+      '<th style="padding:6px 10px;text-align:left;color:#475569">Prénom</th>'+
+      '<th style="padding:6px 10px;text-align:left;color:#475569">S1 Validé</th>'+
+      '<th style="padding:6px 10px;text-align:left;color:#475569">Option</th>'+
+    '</tr></thead><tbody>'+
+    ST.redoublants.map(function(r){
+      var label=OPT_FULL[r.option_validee]||r.option_validee||"—";
+      var s1=r.semestre1_valide?"<span style='color:#16a34a;font-weight:600'>OUI</span>":"<span style='color:#94a3b8'>NON</span>";
+      return "<tr><td style='padding:5px 10px'>"+r.num_etudiant+"</td>"+
+        "<td style='padding:5px 10px'>"+(r.nom||"")+"</td>"+
+        "<td style='padding:5px 10px'>"+(r.prenom||"")+"</td>"+
+        "<td style='padding:5px 10px'>"+s1+"</td>"+
+        "<td style='padding:5px 10px'>"+label+"</td></tr>";
+    }).join("")+
+    '</tbody></table>';
+}
+
+</script>
+</body>
+</html
+
+
+function rebuildFromConfig(){
+  window.CORRECT={};
+  window.TEST_Q={maths:[],spanish:[],de:[],zh:[],es:[]};
+  var map={maths:"maths",spanish:"spanish",lv2_de:"de",lv2_zh:"zh",lv2_es:"es"};
+  Object.keys(TEST_CONFIG).forEach(function(disc){
+    var key=map[disc]||disc;
+    TEST_CONFIG[disc].forEach(function(q){
+      CORRECT[q.id]=q.correct;
+      if(TEST_Q[key])TEST_Q[key].push(q.id);
+    });
+  });
+}
+rebuildFromConfig();
+var SPORT_SUBS=["sport1","sport2","sport3","sport4","sport5"];
+var SPORT_NAMES={sport1:"Sport 1",sport2:"Sport 2",sport3:"Sport 3",sport4:"Sport 4",sport5:"Sport 5"};
+var SPORT_COLORS=["#ec4899","#f43f5e","#f97316","#8b5cf6","#06b6d4"];
+// Codes Form LV2 (ce que l'étudiant choisit dans le Google Form)
+var LV2_FORM=["lv2_allemand","lv2_espagnol","lv2_chinois"];
+// Codes niveau LV2 (ce que l'enseignant affecte = groupes finaux)
+var LV2_NIVEAUX=["lv2_de_debut","lv2_de_debut2","lv2_de_inter","lv2_chinois","lv2_es_debut","lv2_es_inter","lv2_es_avance"];
+var LV2_SUBS=LV2_NIVEAUX; // alias pour rétrocompatibilité
+// Options disponibles dans les selects de groupes (codes finaux d'affectation)
+var OPT_LIST=[
+  {v:"voltaire",label:"Certification Voltaire"},{v:"eco",label:"Economie contemporaine"},
+  {v:"maths",label:"Maths RaN"},{v:"sport1",get label(){return SPORT_NAMES.sport1;}},{v:"sport2",get label(){return SPORT_NAMES.sport2;}},
+  {v:"sport3",get label(){return SPORT_NAMES.sport3;}},{v:"sport4",get label(){return SPORT_NAMES.sport4;}},{v:"sport5",get label(){return SPORT_NAMES.sport5;}},
+  {v:"business_spanish",label:"Business Spanish"},
+  {v:"lv2_de_debut",label:"All. Debutant"},{v:"lv2_de_debut2",label:"All. Debutant 2"},
+  {v:"lv2_de_inter",label:"All. Intermediaire"},{v:"lv2_chinois",label:"LV2 Chinois"},
+  {v:"lv2_es_debut",label:"Esp. Debutant"},{v:"lv2_es_inter",label:"Esp. Intermediaire"},
+  {v:"lv2_es_avance",label:"Esp. Avance"}
+];
+var OPT_CLR={voltaire:"#dbeafe",eco:"#dcfce7",maths:"#fef9c3",business_spanish:"#ffedd5",sport1:"#fce7f3",sport2:"#ede9fe",sport3:"#fff7ed",sport4:"#ecfdf5",sport5:"#f0f9ff",lv2_de_debut:"#f5f3ff",lv2_de_debut2:"#ede9fe",lv2_de_inter:"#ddd6fe",lv2_chinois:"#fdf4ff",lv2_es_debut:"#fff1f2",lv2_es_inter:"#ffe4e6",lv2_es_avance:"#fecdd3"};
+var OPT_FULL={};
+// Ajouter les codes Form LV2 dans OPT_FULL pour les afficher lisiblement
+OPT_FULL["lv2_allemand"]="LV2 Allemand";
+OPT_FULL["lv2_espagnol"]="LV2 Espagnol";
+OPT_FULL["lv2_chinois"]="LV2 Chinois";
+OPT_LIST.forEach(function(o){OPT_FULL[o.v]=o.label;});
+// ── ETAT ──────────────────────────────────────────────────────────
+var ST={answers:{},testsDone:{},testsChecked:{maths:false,spanish:false,lv2:false},levelMaths:null,levelSpanish:null,levelLV2:null,langLV2:null,rawData:null,results:null,niveaux:{},combis:[],gformUrl:"",redoublants:[]};
+var PLACES={voltaire:{max:80,pris:0},eco:{max:100,pris:0},maths:{max:40,pris:0},sport1:{max:0,pris:0},sport2:{max:0,pris:0},sport3:{max:0,pris:0},sport4:{max:0,pris:0},sport5:{max:0,pris:0},business_spanish:{max:40,pris:0},lv2_de_debut:{max:20,pris:0},lv2_de_debut2:{max:20,pris:0},lv2_de_inter:{max:20,pris:0},lv2_chinois:{max:25,pris:0},lv2_es_debut:{max:25,pris:0},lv2_es_inter:{max:25,pris:0},lv2_es_avance:{max:20,pris:0}};
+
+// ── NAVIGATION ────────────────────────────────────────────────────
+function goTo(id){
+  document.querySelectorAll(".pf-page").forEach(function(p){
+    p.classList.remove("active");p.style.display="none";
+  });
+  document.querySelectorAll(".pf-nav-btn").forEach(function(b){b.classList.remove("active");});
+  var pg=document.getElementById("page-"+id);
+  if(pg){pg.classList.add("active");pg.style.display="block";}
+  var nm={accueil:0,catalogue:1,voeux:2,tests:3};
+  if(nm[id]!==undefined)document.querySelectorAll(".pf-nav-btn")[nm[id]].classList.add("active");
+  if(id==="enseignant"){updateEnsPageFromConfig();}
+  if(id==="admin")refreshAffectTab();
+  window.scrollTo(0,0);
+}
+// ── JAUGES ────────────────────────────────────────────────────────
+function updateJauge(id,pris,max){var bar=document.getElementById("jb-"+id);var txt=document.getElementById("jt-"+id);if(!bar||!txt)return;var pct=max>0?Math.round(100*pris/max):0;bar.style.width=pct+"%";bar.className="jauge-bar "+(pct<50?"jg-low":pct<80?"jg-mid":"jg-high");txt.textContent=(max-pris)+" / "+max;}
+function initJauges(){updateJauge("voltaire",PLACES.voltaire.pris,PLACES.voltaire.max);updateJauge("eco",PLACES.eco.pris,PLACES.eco.max);updateJauge("maths",PLACES.maths.pris,PLACES.maths.max);updateJauge("spanish",PLACES.business_spanish.pris,PLACES.business_spanish.max);updateJauge("s1",PLACES.sport1.pris,PLACES.sport1.max);updateJauge("s2",PLACES.sport2.pris,PLACES.sport2.max);updateJauge("s3",PLACES.sport3.pris,PLACES.sport3.max);updateJauge("s4",PLACES.sport4.pris,PLACES.sport4.max);updateJauge("s5",PLACES.sport5.pris,PLACES.sport5.max);}
+function updateJaugesFromAdmin(){function g(id,def){var el=document.getElementById(id);return el?+el.value||def:def;}PLACES.voltaire.max=g("adm-voltaire",80);PLACES.eco.max=g("adm-eco",100);PLACES.maths.max=g("adm-maths-pl",40);PLACES.business_spanish.max=g("adm-spanish",40);PLACES.sport1.max=g("adm-s1",0);PLACES.sport2.max=g("adm-s2",0);PLACES.sport3.max=g("adm-s3",0);PLACES.sport4.max=g("adm-s4",0);PLACES.sport5.max=g("adm-s5",0);PLACES.lv2_de_debut.max=g("adm-lv2-de-debut",20);PLACES.lv2_de_debut2.max=g("adm-lv2-de-debut2",20);PLACES.lv2_de_inter.max=g("adm-lv2-de-inter",20);PLACES.lv2_chinois.max=g("adm-lv2-zh",25);PLACES.lv2_es_debut.max=g("adm-lv2-es-debut",25);PLACES.lv2_es_inter.max=g("adm-lv2-es-inter",25);PLACES.lv2_es_avance.max=g("adm-lv2-es-avance",20);initJauges();}
+// ── GFORM ─────────────────────────────────────────────────────────
+function applyGformUrl(url){ST.gformUrl=url;localStorage.setItem("gform_url",url);document.getElementById("gform-config-zone").style.display="none";var btn=document.getElementById("btn-open-form");btn.disabled=false;if(document.getElementById("adm-gform-url"))document.getElementById("adm-gform-url").value=url;if(document.getElementById("gform-status")){document.getElementById("gform-status").textContent="Actif : "+url;document.getElementById("gform-status").style.color="#16a34a";}}
+function openForm(){if(!ST.gformUrl){alert("URL non configuree.");return;}window.open(ST.gformUrl,"_blank");}
+function saveGformUrl(){var url=document.getElementById("adm-gform-url").value.trim();if(!url||(!url.includes("google.com/forms")&&!url.includes("forms.gle"))){alert("URL invalide.");return;}applyGformUrl(url);alert("URL enregistree. Le bouton Voeux est maintenant actif.");}
+// ── TESTS : SELECTEUR ─────────────────────────────────────────────
+function toggleTest(type){var checked=!ST.testsChecked[type];ST.testsChecked[type]=checked;var item=document.getElementById("tci-"+type);var box=document.getElementById("tcibox-"+type);item.classList.toggle("checked",checked);box.style.background=checked?"#2563eb":"#fff";box.style.borderColor=checked?"#2563eb":"#cbd5e1";document.getElementById("test-"+type).classList.toggle("visible",checked);var any=Object.values(ST.testsChecked).some(function(v){return v;});document.getElementById("badge-tests").style.display=any?"inline":"none";}
+// ── DECLARATION MATHS ─────────────────────────────────────────────
+function setLevelMaths(el,level){document.querySelectorAll("#lvl-btns-maths .level-btn").forEach(function(b){b.classList.remove("sel");});el.classList.add("sel");ST.levelMaths=level;var isDeb=(level==="debutant");document.getElementById("maths-debutant-msg").style.display=isDeb?"block":"none";document.getElementById("maths-questions").style.display=isDeb?"none":"block";if(isDeb){ST.testsDone.maths=true;ST.answers.score_maths="debutant";document.getElementById("ok-maths").style.display="inline";document.getElementById("test-maths-actions").style.display="block";showPrintBtn("maths");}else{renderTestFromConfig("maths","maths-questions");}}
+// ── DECLARATION SPANISH ───────────────────────────────────────────
+function setLevelSpanish(el,level){document.querySelectorAll("#lvl-btns-spanish .level-btn").forEach(function(b){b.classList.remove("sel");});el.classList.add("sel");ST.levelSpanish=level;var insuf=(level==="debutant"||level==="a2");var ok=(level==="b1"||level==="b2plus");document.getElementById("spanish-insuf-msg").style.display=insuf?"block":"none";document.getElementById("spanish-ok-msg").style.display=ok?"block":"none";if(ok)renderTestFromConfig("spanish","spanish-questions");else{var sq=document.getElementById("spanish-questions");if(sq){sq.innerHTML="";sq.style.display="none";}}if(insuf){ST.testsDone.spanish=true;ST.answers.score_spanish="insuf_"+level;var okEl=document.getElementById("ok-spanish");okEl.textContent="Declaration enregistree (niveau insuffisant)";okEl.style.color="#dc2626";okEl.style.display="inline";}}
+// ── DECLARATION LV2 ───────────────────────────────────────────────
+function selectLang(lang,el){document.querySelectorAll("#test-lv2 .level-btn[id^='lv2-lang']").forEach(function(b){b.classList.remove("sel");});el.classList.add("sel");ST.langLV2=lang;var labels={de:"Allemand",zh:"Chinois",es:"Espagnol"};document.getElementById("lv2-lang-label").textContent=labels[lang];document.getElementById("lv2-level-zone").style.display="block";document.querySelectorAll("#lvl-btns-lv2 .level-btn").forEach(function(b){b.classList.remove("sel");});["de","zh","es"].forEach(function(l){document.getElementById("lv2-"+l+"-questions").style.display="none";});document.getElementById("lv2-debutant-msg").style.display="none";document.querySelector(".lv2-avance-btn").style.display=lang==="es"?"":"none";}
+function setLevelLV2(el,level){document.querySelectorAll("#lvl-btns-lv2 .level-btn").forEach(function(b){b.classList.remove("sel");});el.classList.add("sel");ST.levelLV2=level;var isDeb=(level==="debutant");document.getElementById("lv2-debutant-msg").style.display=isDeb?"block":"none";["de","zh","es"].forEach(function(l){document.getElementById("lv2-"+l+"-questions").style.display="none";});if(!isDeb&&ST.langLV2)renderTestFromConfig("lv2_"+ST.langLV2,"lv2-"+ST.langLV2+"-questions");if(isDeb){ST.testsDone.lv2=true;ST.answers.score_lv2="debutant";}}
+// ── QCM ───────────────────────────────────────────────────────────
+function pick(el){var q=el.getAttribute("data-q");var a=el.getAttribute("data-a");if(el.classList.contains("correct")||el.classList.contains("wrong"))return;ST.answers[q]=a;document.querySelectorAll("[data-q='"+q+"']").forEach(function(o){o.classList.toggle("chosen",o.getAttribute("data-a")===a);});}
+// ── RENDU DYNAMIQUE DES QUESTIONS ─────────────────────────────────
+function renderTestFromConfig(disc, containerId){
+  var container=document.getElementById(containerId);
+  if(!container)return;
+  var qs=TEST_CONFIG[disc];
+  if(!qs||!qs.length){
+    container.innerHTML='<div class="banner bw">Aucune question configuree. L\'administrateur doit saisir les questions dans Configuration.</div>';
+    container.style.display="block";
+    return;
+  }
+  container.innerHTML=qs.map(function(q,i){
+    var optsHtml=q.opts.map(function(o){
+      return '<div class="q-opt" data-q="'+q.id+'" data-a="'+o.a+'" onclick="pick(this)"><div class="q-radio"></div>'+o.l+'</div>';
+    }).join('');
+    return '<div class="q-block"><div class="q-text">'+(i+1)+'. '+q.q+'</div><div class="q-opts">'+optsHtml+'</div></div>';
+  }).join('');
+  container.style.display="block";
+  // Afficher aussi les boutons d'action
+  var actionsId=containerId.replace('-questions','')+'-actions';
+  // Cas LV2 : test-lv2-de-actions etc.
+  var altId="test-"+disc.replace('lv2_','lv2-').replace('_','-')+"-actions";
+  var actions=document.getElementById(actionsId)||document.getElementById(altId);
+  if(actions)actions.style.display="block";
+}
+
+// Recharger les tests depuis config (après modification par admin/enseignant)
+function reloadAllTests(){
+  rebuildFromConfig();
+  // Vider les conteneurs pour forcer le re-rendu au prochain affichage
+  ['maths-questions','spanish-questions','lv2-de-questions','lv2-zh-questions','lv2-es-questions'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el){el.innerHTML='';el.style.display='none';}
+  });
+  // Réinitialiser les réponses et états
+  ST.answers={};ST.testsDone={};
+}
+
+function gradeQs(qids){var score=0;qids.forEach(function(q){var ans=ST.answers[q];if(!ans)return;document.querySelectorAll("[data-q='"+q+"']").forEach(function(el){var isC=el.getAttribute("data-a")===CORRECT[q];var isA=el.getAttribute("data-a")===ans;el.classList.remove("chosen");if(isC&&isA){el.classList.add("correct");score++;}else if(!isC&&isA)el.classList.add("wrong");else if(isC&&!isA)el.classList.add("missed");});});return score;}
+function showScore(scoreElId,score,tot,extra){var pct=Math.round(100*score/tot);var cls=pct>=70?"good":pct>=45?"mid":"low";var msgs={good:"Bon niveau",mid:"Niveau intermediaire",low:"Niveau faible"};var el=document.getElementById(scoreElId);if(!el)return;el.className="score-box "+cls;el.textContent="Score : "+score+"/"+tot+" ("+pct+"%) \u2014 "+msgs[cls]+(extra?" "+extra:"");el.style.display="block";}
+function submitTest(type){var qids=TEST_Q[type];if(!qids)return;var score=gradeQs(qids);showScore("score-"+type,score,qids.length,"");ST.testsDone[type]=true;ST.answers["score_"+type]=score+"/"+qids.length;document.getElementById("ok-"+type).style.display="inline";showPrintBtn(type);}
+function submitLV2Test(lang){var qids=TEST_Q[lang];if(!qids)return;var score=gradeQs(qids);showScore("score-lv2-"+lang,score,qids.length,"(indicatif)");ST.testsDone.lv2=true;ST.answers.score_lv2=score+"/"+qids.length;ST.answers.lang_lv2=lang;document.getElementById("ok-lv2-"+lang).style.display="inline";showPrintBtn("lv2-"+lang);}
+// ── ENSEIGNANT ────────────────────────────────────────────────────
+function checkEns(){if((document.getElementById("ens-pwd")||{}).value==="enseignant2026!"){document.getElementById("ens-err").style.display="none";updateEnsPageFromConfig();goTo("enseignant");}else{document.getElementById("ens-err").style.display="flex";}}
+function ensTab(name){["maths","spanish","lv2"].forEach(function(t){document.getElementById("epanel-"+t).style.display=t===name?"block":"none";document.getElementById("etab-"+t).classList.toggle("active",t===name);});renderEns(name);}
+function checkAdmin(){if(document.getElementById("admin-pwd").value==="options2026!"){document.getElementById("admin-err").style.display="none";var saved=localStorage.getItem("gform_url");if(saved&&document.getElementById("adm-gform-url"))document.getElementById("adm-gform-url").value=saved;if(!ST.combis.length)initDefaultCombis();renderCombisUI();renderRedoublants();goTo("admin");}else{document.getElementById("admin-err").style.display="flex";}}
+function adminTab(name){["config","groupes","import","affect","resultats"].forEach(function(t){var p=document.getElementById("apanel-"+t);var b=document.getElementById("atab-"+t);if(p)p.style.display=t===name?"block":"none";if(b)b.classList.toggle("active",t===name);});if(name==="affect")refreshAffectTab();}
+function updateSportLabels(){
+  for(var i=1;i<=5;i++){
+    var el=document.getElementById("adm-snom"+i);
+    if(!el)continue;
+    var nom=el.value.trim()||("Sport "+i);
+    SPORT_NAMES["sport"+i]=nom;
+    OPT_FULL["sport"+i]=nom;
+  }
+  // Mettre à jour les labels dans OPT_LIST
+  OPT_LIST.forEach(function(o){
+    if(o.v&&o.v.startsWith("sport"))o._label=SPORT_NAMES[o.v];
+  });
+}
+function renderSportCatalogue(){
+  var container=document.getElementById("sport-cards-container");
+  if(!container)return;
+  var placeholder=document.getElementById("sport-not-configured");
+  // Vérifier si au moins un sport est configuré (nom saisi ou places > 0)
+  var configured=SPORT_SUBS.some(function(s,i){
+    var nomEl=document.getElementById("adm-snom"+(i+1));
+    var plEl=document.getElementById("adm-s"+(i+1));
+    return (nomEl&&nomEl.value.trim())||(plEl&&+plEl.value>0);
+  });
+  if(placeholder)placeholder.style.display=configured?"none":"flex";
+  // Supprimer les cartes existantes
+  container.querySelectorAll(".opt-card-sport").forEach(function(c){c.remove();});
+  // Créer une carte par discipline configurée
+  SPORT_SUBS.forEach(function(key,i){
+    var idx=i+1;
+    var nomEl=document.getElementById("adm-snom"+idx);
+    var plEl=document.getElementById("adm-s"+idx);
+    var nom=(nomEl&&nomEl.value.trim())||null;
+    var places=plEl?+plEl.value:0;
+    // Masquer si aucun nom ET 0 places
+    if(!nom&&places===0)return;
+    var color=SPORT_COLORS[i];
+    var SPORT_BG=["#fdf2f8","#fff1f2","#fff7ed","#f5f3ff","#ecfeff"];
+    var div=document.createElement("div");
+    div.className="opt-card opt-card-sport";
+    div.style.background=SPORT_BG[i]||"#f8fafc";
+    div.style.borderColor="transparent";
+    var pct=places>0?Math.round(100*PLACES[key].pris/places):0;
+    var jaugeHtml=places===0
+      ? '<div class="jauge-inf">Places a confirmer</div>'
+      : '<div class="jauge-wrap"><div class="jauge-label"><span>Places restantes</span><strong id="jt-'+key+'">'+(places-PLACES[key].pris)+' / '+places+'</strong></div><div class="jauge-bg"><div class="jauge-bar jg-low" id="jb-'+key+'" style="width:'+pct+'%"></div></div></div>';
+    div.innerHTML='<div class="opt-card-inner"><div class="opt-stripe" style="background:'+color+'"></div><div class="opt-body"><div class="opt-name">'+(nom||"Sport "+idx)+'</div><div class="opt-badges"><span class="badge badge-sem">Semestre</span>'+(places===0?'<span class="badge badge-tbd">Places a confirmer</span>':'')+'</div><div class="opt-desc">Activite sportive — semestre. Creneaux communiques a la rentree.</div><div class="opt-footer">'+jaugeHtml+'</div></div></div>';
+    container.appendChild(div);
+  });
+}
+function saveConfig(){
+  updateSportLabels();
+  updateJaugesFromAdmin();
+  renderSportCatalogue();
+  // Mettre à jour OPT_FULL pour les sports dans les selects de groupes
+  SPORT_SUBS.forEach(function(s,i){
+    OPT_FULL[s]=SPORT_NAMES[s];
+  });
+  // Re-rendre l'UI des groupes pour que les labels des selects se mettent à jour
+  if(ST.combis.length)renderCombisUI();
+  // Mettre à jour le bloc infos pratiques sur la page Tests
+  updateTestsInfo();
+  alert("Configuration enregistree. Catalogue, jauges et informations pratiques mis a jour.");
+}
+function updateTestsInfo(){
+  function sf(id,valId,inputId){
+    var el=document.getElementById(inputId);
+    var val=el?el.value.trim():"";
+    var wrap=document.getElementById(id);
+    var span=document.getElementById(valId);
+    if(wrap)wrap.style.display=val?"block":"none";
+    if(span)span.textContent=val;
+  }
+  function showBloc(blocId,fields){
+    var hasAny=fields.some(function(id){var el=document.getElementById(id);return el&&el.value.trim();});
+    var bloc=document.getElementById(blocId);
+    if(bloc)bloc.style.display=hasAny?"block":"none";
+  }
+  // Maths
+  sf("ti-ens-maths","ti-ens-maths-val","adm-ens-maths");
+  sf("ti-date-maths","ti-date-maths-val","adm-date-maths");
+  sf("ti-salle-maths","ti-salle-maths-val","adm-salle-maths");
+  showBloc("ti-bloc-maths",["adm-ens-maths","adm-date-maths","adm-salle-maths"]);
+  // Spanish
+  sf("ti-ens-spanish","ti-ens-spanish-val","adm-ens-spanish");
+  sf("ti-date-spanish","ti-date-spanish-val","adm-date-spanish");
+  sf("ti-salle-spanish","ti-salle-spanish-val","adm-salle-spanish");
+  showBloc("ti-bloc-spanish",["adm-ens-spanish","adm-date-spanish","adm-salle-spanish"]);
+  // LV2
+  sf("ti-ens-lv2","ti-ens-lv2-val","adm-ens-lv2");
+  sf("ti-date-lv2","ti-date-lv2-val","adm-date-lv2");
+  sf("ti-salle-lv2","ti-salle-lv2-val","adm-salle-lv2");
+  showBloc("ti-bloc-lv2",["adm-ens-lv2","adm-date-lv2","adm-salle-lv2"]);
+  // Bloc global
+  var anyDisc=["adm-ens-maths","adm-date-maths","adm-salle-maths",
+               "adm-ens-spanish","adm-date-spanish","adm-salle-spanish",
+               "adm-ens-lv2","adm-date-lv2","adm-salle-lv2"].some(function(id){
+    var el=document.getElementById(id);return el&&el.value.trim();
+  });
+  var bloc=document.getElementById("tests-info-bloc");
+  if(bloc)bloc.style.display=anyDisc?"block":"none";
+}
+// ── COMBINAISONS ──────────────────────────────────────────────────
+function optSelectHtml(val){var o='<option value="">-- Aucune --</option>';OPT_LIST.forEach(function(x){o+='<option value="'+x.v+'"'+(x.v===val?' selected':'')+'> '+x.label+'</option>';});return o;}
+function initDefaultCombis(){
+  function pl(opt){return PLACES[opt]&&PLACES[opt].max>0?PLACES[opt].max:(opt==='eco'?200:25);}
+  ST.combis=[
+    {id:1,nom:"Groupe 1",places:pl("eco"),opt1:"eco",opt2:"",opt3:"",opt4:"",opt5:""},
+    {id:2,nom:"Groupe 2",places:pl("maths"),opt1:"maths",opt2:"",opt3:"",opt4:"",opt5:""},
+    {id:3,nom:"Groupe 3",places:pl("business_spanish"),opt1:"business_spanish",opt2:"",opt3:"",opt4:"",opt5:""}
+  ];
+}
+function renderCombisUI(){
+  var c=document.getElementById("combis-list");if(!c)return;c.innerHTML="";
+  ST.combis.forEach(function(g,i){
+    var d=document.createElement("div");d.className="combi-card";
+    d.innerHTML='<div class="combi-header"><div class="combi-num">'+(i+1)+'</div>'+
+      '<input class="combi-name-input" placeholder="Nom du groupe" value="'+g.nom+'" data-ci="'+i+'" data-f="nom">'+
+      '<input class="combi-places-input" type="number" min="1" value="'+g.places+'" placeholder="?" data-ci="'+i+'" data-f="places">'+
+      '<span class="combi-places-label">places</span>'+
+      '<button class="btn-del-combi" onclick="delCombi('+i+')">&#10005;</button></div>'+
+      '<div style="font-size:11px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px">Options incluses dans ce groupe (1 à 5 maximum)</div>'+
+      '<div class="combi-opts-row">'+
+        '<select class="combi-opt-sel'+(g.opt1?' has-val':'')+'" data-ci="'+i+'" data-f="opt1">'+optSelectHtml(g.opt1)+'</select>'+
+        '<select class="combi-opt-sel'+(g.opt2?' has-val':'')+'" data-ci="'+i+'" data-f="opt2">'+optSelectHtml(g.opt2)+'</select>'+
+        '<select class="combi-opt-sel'+(g.opt3?' has-val':'')+'" data-ci="'+i+'" data-f="opt3">'+optSelectHtml(g.opt3)+'</select>'+
+        '<select class="combi-opt-sel'+(g.opt4?' has-val':'')+'" data-ci="'+i+'" data-f="opt4">'+optSelectHtml(g.opt4)+'</select>'+
+        '<select class="combi-opt-sel'+(g.opt5?' has-val':'')+'" data-ci="'+i+'" data-f="opt5">'+optSelectHtml(g.opt5||'')+'</select>'+
+      '</div>'+
+      '<div class="combi-tags">'+[g.opt1,g.opt2,g.opt3,g.opt4,g.opt5].filter(Boolean).map(function(o){return'<span class="combi-tag" style="background:'+(OPT_CLR[o]||'#f1f5f9')+'">'+(OPT_FULL[o]||o)+'</span>';}).join('')+'</div>';
+    d.querySelectorAll("[data-ci]").forEach(function(el){
+      el.addEventListener("change",function(){
+        var ci=+el.getAttribute("data-ci");var f=el.getAttribute("data-f");
+        ST.combis[ci][f]=f==="places"?+el.value:el.value;
+        if(f.startsWith("opt"))el.className="combi-opt-sel"+(el.value?" has-val":"");
+        renderTagsForCard(d,ST.combis[ci]);
+      });
+    });
+    c.appendChild(d);
+  });
+}
+
+function renderTagsForCard(card,g){var tc=card.querySelector(".combi-tags");if(!tc)return;tc.innerHTML=[g.opt1,g.opt2,g.opt3,g.opt4,g.opt5].filter(Boolean).map(function(o){return '<span class="combi-tag" style="background:'+(OPT_CLR[o]||'#f1f5f9')+'">'+OPT_FULL[o]+'</span>';}).join('');}
+function addCombi(){ST.combis.push({id:Date.now(),nom:"Groupe "+(ST.combis.length+1),places:25,opt1:"",opt2:"",opt3:""});renderCombisUI();}
+function delCombi(i){if(ST.combis.length<=1){alert("Il faut au moins un groupe.");return;}ST.combis.splice(i,1);renderCombisUI();}
+function saveGroupes(){var ok=document.getElementById("groupes-save-ok");ok.style.display="inline";setTimeout(function(){ok.style.display="none";},2500);}
+function loadGroupesDemo(){
+  ST.combis=[
+    {id:1, nom:"G01",places:25,opt1:"eco",           opt2:"lv2_es_inter",  opt3:"",              opt4:""},
+    {id:2, nom:"G02",places:25,opt1:"eco",           opt2:"lv2_de_debut",  opt3:"",              opt4:""},
+    {id:3, nom:"G03",places:25,opt1:"eco",           opt2:"lv2_chinois",        opt3:"",              opt4:""},
+    {id:4, nom:"G04",places:20,opt1:"maths",         opt2:"lv2_de_debut",  opt3:"",              opt4:""},
+    {id:5, nom:"G05",places:20,opt1:"maths",         opt2:"lv2_es_debut",  opt3:"",              opt4:""},
+    {id:6, nom:"G06",places:20,opt1:"business_spanish",opt2:"lv2_es_avance",opt3:"",             opt4:""},
+    {id:7, nom:"G07",places:20,opt1:"business_spanish",opt2:"lv2_es_inter", opt3:"",             opt4:""},
+    {id:8, nom:"G08",places:20,opt1:"voltaire",      opt2:"lv2_de_inter",  opt3:"",              opt4:""},
+    {id:9, nom:"G09",places:20,opt1:"sport1",        opt2:"eco",           opt3:"lv2_chinois",        opt4:"voltaire"},
+    {id:10,nom:"G10",places:20,opt1:"sport2",        opt2:"maths",         opt3:"",              opt4:""},
+    {id:11,nom:"G11",places:20,opt1:"sport3",        opt2:"voltaire",      opt3:"lv2_de_debut2", opt4:""}
+  ];
+  renderCombisUI();
+}
+function showAffect(){adminTab("affect");setTimeout(function(){refreshAffectTab();},80);}
+function refreshAffectTab(){
+  var hasData=!!ST.rawData;
+  var hasCombis=ST.combis.length>0&&ST.combis.some(function(c){return c.opt1;});
+  
+  var checks=document.getElementById("affect-checks");checks.innerHTML="";
+  if(!hasData){var d=document.createElement("div");d.className="banner bw";d.style.marginBottom="10px";d.innerHTML='<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92z" clip-rule="evenodd"/></svg><div>Aucune donnee chargee &mdash; <button class="btn btn-secondary btn-sm" onclick="adminTab(\'import\')">Importer un Excel</button></div>';checks.appendChild(d);}
+  if(!hasCombis){var d2=document.createElement("div");d2.className="banner bw";d2.style.marginBottom="10px";d2.innerHTML='<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92z" clip-rule="evenodd"/></svg><div>Aucun groupe configure &mdash; <button class="btn btn-secondary btn-sm" onclick="adminTab(\'groupes\')">Configurer les groupes</button></div>';checks.appendChild(d2);}
+  document.getElementById("affect-ready").style.display=(hasData&&hasCombis)?"block":"none";
+  if(hasData&&hasCombis){
+    document.getElementById("affect-ok").innerHTML=ST.rawData.length+" etudiants charges &middot; "+ST.combis.length+" groupes configures.";
+    var recap=document.getElementById("affect-groupes-recap");
+    recap.innerHTML=ST.combis.map(function(c){var opts=[c.opt1,c.opt2,c.opt3,c.opt4].filter(Boolean);return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:3px 9px"><strong>'+c.nom+'</strong>&nbsp;('+c.places+'pl)&nbsp;'+opts.map(function(o){return '<span style="font-size:10px;background:'+(OPT_CLR[o]||'#e2e8f0')+';border-radius:4px;padding:1px 5px">'+OPT_FULL[o]+'</span>';}).join(' ')+'</span>';}).join("");
+  }
+}
+// ── IMPORT ────────────────────────────────────────────────────────
+function dragOver(e){e.preventDefault();document.getElementById("upload-zone").classList.add("dragover");}
+function dragLeave(){document.getElementById("upload-zone").classList.remove("dragover");}
+
+function loadXlsx(inp){if(inp.files[0])parseXlsxFile(inp.files[0]);}
+function dropFile(e){e.preventDefault();dragLeave();if(e.dataTransfer.files[0])parseXlsxFile(e.dataTransfer.files[0]);}
+function parseXlsxFile(f){
+  if(typeof XLSX==="undefined"){alert("SheetJS non charge.");return;}
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(e.target.result,{type:"array",raw:false,cellDates:true});
+      // Prendre le premier onglet
+      var wsName=wb.SheetNames[0];
+      var ws=wb.Sheets[wsName];
+      // Convertir en tableau de tableaux pour récupérer la ligne d'en-tête brute
+      var aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:""});
+      if(!aoa.length){alert("Fichier vide ou non reconnu.");return;}
+      var rawHdrs=aoa[0];
+      var hdrs=rawHdrs.map(normalizeHdr);
+      var data=aoa.slice(1).filter(function(row){return row.some(function(c){return c&&String(c).trim();});}).map(function(row){
+        var o={};
+        hdrs.forEach(function(h,i){o[h]=row[i]!==undefined?String(row[i]).trim():"";});
+        ["voeu1","voeu2","voeu3"].forEach(function(k){if(o[k])o[k]=normalizeOpt(o[k]);});
+        if(!o.horodatage_soumission){
+          var b=new Date("2026-09-09T08:00:00");
+          b.setSeconds(b.getSeconds()+Math.random()*172800);
+          o.horodatage_soumission=b.toISOString().replace("T"," ").slice(0,19);
+        }
+        return o;
+      }).filter(function(r){return r.num_etudiant||r.nom;});
+      if(!data.length){alert("Aucune donnee valide trouvee. Verifiez que le fichier est bien l'export Google Sheets.");return;}
+      ST.rawData=data;showPreview(data,hdrs);refreshAffectTab();
+    }catch(err){alert("Erreur de lecture : "+err.message);}
+  };
+  reader.readAsArrayBuffer(f);
+}
+// Mapping en-têtes Google Form → noms internes
+var HDR_MAP={
+  "horodateur":"horodatage_soumission","horodatage":"horodatage_soumission","timestamp":"horodatage_soumission",
+  "adresse_e-mail":"email_google","adresse_email":"email_google","email":"email_google",
+  "votre_numero_etudiant":"num_etudiant","numero_etudiant":"num_etudiant","n_etudiant":"num_etudiant","matricule":"num_etudiant",
+  "question_2_nom":"nom","nom_de_famille":"nom","nom":"nom","nom_prenom":"nom_prenom","nom_et_prenom":"nom_prenom",
   "question_3_prenom":"prenom","prenom":"prenom",
   "voeu_n1_option_prioritaire":"voeu1","voeu_n_1_option_prioritaire":"voeu1","voeu_1":"voeu1","voeu1":"voeu1","premier_voeu":"voeu1",
   "voeu_n_2":"voeu2","voeu_2":"voeu2","voeu2":"voeu2","deuxieme_voeu":"voeu2",
