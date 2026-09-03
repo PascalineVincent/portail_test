@@ -2411,6 +2411,56 @@ window.addEventListener("load",function(){
   else document.getElementById("gform-config-zone").style.display="block";
 });
 
+function importRedoublantsXlsx(file){
+  if(!file)return;
+  if(typeof XLSX==="undefined"){alert("SheetJS non charge.");return;}
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(e.target.result,{type:"array",raw:false,defval:""});
+      var ws=wb.Sheets[wb.SheetNames[0]];
+      var rows=XLSX.utils.sheet_to_json(ws,{raw:false,defval:""});
+      if(!rows.length){alert("Fichier vide.");return;}
+      var results=[];
+      rows.forEach(function(row){
+        var norm={};
+        Object.keys(row).forEach(function(k){norm[normalizeHdr(k)]=String(row[k]||"").trim();});
+        // N° étudiant
+        var num=norm.num_etudiant||norm.numero_etudiant||norm.no_etudiant||norm.n_etudiant||norm.matricule||"";
+        if(!num)return;
+        // NOM PRENOM (colonne fusionnée ou séparée)
+        var nomPrenom=norm.nom_prenom||norm.nom_et_prenom||"";
+        var nom=norm.nom||(nomPrenom?nomPrenom.split(" ")[0]:"");
+        var prenom=norm.prenom||(nomPrenom?nomPrenom.split(" ").slice(1).join(" "):"");
+        // SEMESTRE 1 VALIDE
+        var sem1Keys=["semestre_1_valide","semestre1_valide","s1_valide","semestre_valide","semestre_1","semestre_1_valid"];
+        // OPTION VALIDE / OPTION VALIDEE
+        var optKeys=["option_validee","option_valide","option_valid","option","code_option"];
+        var sem1Val="",optVal="";
+        sem1Keys.forEach(function(k){if(norm[k]&&!sem1Val)sem1Val=norm[k].toLowerCase();});
+        optKeys.forEach(function(k){if(norm[k]&&!optVal)optVal=norm[k];});
+        var sem1Ok=sem1Val==="oui"||sem1Val==="yes"||sem1Val==="1"||sem1Val==="true";
+        var optOk=optVal.toLowerCase()==="oui"||optVal.toLowerCase()==="yes";
+        // Éligible si S1 valide OU option validée
+        if(!sem1Ok&&!optOk)return;
+        // Option à affecter
+        var optNorm=(optVal&&optVal.toLowerCase()!=="oui"&&optVal.toLowerCase()!=="yes")?normalizeOpt(optVal):"eco";
+        results.push({num_etudiant:num,nom:nom,prenom:prenom,
+          option_validee:optNorm,semestre1_valide:sem1Ok,option_validee_raw:optVal});
+      });
+      if(!results.length){
+        alert("Aucun redoublant eligible reconnu.\nColonnes attendues :\n- N° Etudiant\n- Nom Prenom (ou Nom + Prenom)\n- Semestre 1 Valide (OUI/NON)\n- Option Valide (OUI/NON ou nom option)");
+        return;
+      }
+      ST.redoublants=results;
+      renderRedoublants();
+      var okEl=document.getElementById("redoub-ok");
+      if(okEl){okEl.style.display="flex";okEl.textContent=results.length+" redoublant(s) eligibles importes.";}
+    }catch(err){alert("Erreur : "+err.message);}
+  };
+  reader.readAsArrayBuffer(file);
+}
+
 function renderRedoublants(){
   var wrap=document.getElementById("redoub-list");
   if(!wrap)return;
@@ -2437,10 +2487,6 @@ function renderRedoublants(){
     }).join("")+
     '</tbody></table>';
 }
-
-</script>
-</body>
-</html
 
 
 function rebuildFromConfig(){
